@@ -88,13 +88,6 @@ async function handleServers(request, env, ctx, startedAt) {
   )
 }
 
-/** 取图失败时的处理方式：redirect（默认，302 到真实图片地址）/ error（返回 502） */
-function mediaFallbackMode(env) {
-  return String(env.MEDIA_FALLBACK || 'redirect').trim().toLowerCase() === 'error'
-    ? 'error'
-    : 'redirect'
-}
-
 async function handleMedia(request, url, env, ctx, upstreamPath) {
   const serverIndex = Number.parseInt(url.searchParams.get('s') || '0', 10)
   const media = await fetchMedia(upstreamPath, {
@@ -104,19 +97,8 @@ async function handleMedia(request, url, env, ctx, upstreamPath) {
   })
 
   if (!media.response || !media.response.ok) {
-    // 图片 CDN 对数据中心出口 IP 比较敏感（Cloudflare Workers 常见 403）。
-    // 默认回退为 302 直链，让客户端用自己的网络直接取图；<img> 会透明跟随跳转。
-    if (mediaFallbackMode(env) !== 'error') {
-      return new Response(null, {
-        status: 302,
-        headers: {
-          Location: media.url,
-          'Cache-Control': 'no-store',
-          'X-Proxy-Fallback': 'redirect',
-          ...corsHeaders(request, env),
-        },
-      })
-    }
+    // 图片 CDN 对数据中心出口 IP 比较敏感（Cloudflare Workers / EdgeOne 常见 403），
+    // 取不到就直接 502，不再 302 跳到真实图源。
     const reason = media.response ? `HTTP ${media.response.status}` : '上游不可达'
     return errorResponse(`图片获取失败：${reason}`, { status: 502, request, env })
   }

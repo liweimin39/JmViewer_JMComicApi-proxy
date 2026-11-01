@@ -64,7 +64,7 @@ JmViewer_JMComicApi-proxy/
 │   └── [[default]].js      #   其余全部路径（/album、/media/...）
 ├── functions/[[path]].js   # Cloudflare Pages Functions 入口
 ├── api/index.js            # Vercel Edge Function 入口
-├── test/selftest.js        # 65 项离线自测
+├── test/selftest.js        # 64 项离线自测
 ├── wrangler.toml
 ├── vercel.json
 └── .dev.vars.example
@@ -78,9 +78,8 @@ JmViewer_JMComicApi-proxy/
 | `ALLOWED_ORIGINS` | | `*` | 允许的跨域来源，逗号分隔；设为具体域名可防止被随意调用 |
 | `UPSTREAM` | | 自动拉取 | 固定上游 API 域名列表，逗号分隔；配置后跳过 newsvr 拉取 |
 | `SERVER_LIST_URL` | | 官方 newsvr 地址 | 服务器列表地址，可换成自己的镜像 |
-| `IMG_SERVERS` | | 内置 6 个 | 图片域名列表，供 `/media/*` 转发使用；**第 0 个必须是返回 `Access-Control-Allow-Origin` 的域名**（回退直链会用它） |
+| `IMG_SERVERS` | | 内置 6 个 | 图片域名列表，供 `/media/*` 转发使用，逗号分隔 |
 | `REQUEST_TIMEOUT_MS` | | `15000` | 上游请求超时（毫秒） |
-| `MEDIA_FALLBACK` | | `redirect` | 取图失败时的处理：`redirect` = 302 到真实图源（客户端自己取，适合 Workers 出口被图片 CDN 拦截的情况）；`error` = 返回 502 |
 
 ## 5. 接口
 
@@ -99,7 +98,7 @@ JmViewer_JMComicApi-proxy/
 | GET | `/forum` | `page`、`mode`、`aid` | 评论 |
 | GET | `/categories` | — | 分类 |
 | GET | `/categories/filter` | `page`、`c`、`o` | 分类筛选 |
-| GET | `/media/albums/<file>` 等 | `s`（图片域名索引） | 图片转发，带 `Access-Control-Allow-Origin: *` 与长缓存；取不到时按 `MEDIA_FALLBACK` 返回 302 直链 |
+| GET | `/media/albums/<file>` 等 | `s`（图片域名索引） | 图片转发，带 `Access-Control-Allow-Origin: *` 与长缓存；取不到时直接返回 502 |
 
 统一响应结构：
 
@@ -150,7 +149,7 @@ EdgeOne Makers 只认 `edge-functions/` 目录，本仓库已按官方约定放�
 1. 将本目录推送到 GitHub 仓库；
 2. EdgeOne 控制台「Makers → 新建项目 → 导入 Git 仓库」；
 3. 构建配置：框架选「其他」，构建命令留空，输出目录留空（纯函数项目）；
-4. 「环境变量」中添加 `API_KEY`（可选 `ALLOWED_ORIGINS`、`MEDIA_FALLBACK`）；
+4. 「环境变量」中添加 `API_KEY`（可选 `ALLOWED_ORIGINS`）；
 5. 部署完成后，`edge-functions/index.js` 与 `[[default]].js` 接管所有请求。
 
 `onRequest(context)` 中 `context.request` 是标准 Request，`context.env` 是环境变量对象；
@@ -206,9 +205,9 @@ http.createServer(async (req, res) => {
 node test/selftest.js
 ```
 
-覆盖 65 项：MD5 向量与 Node `crypto` 对拍、AES-256-ECB 往返（1 B ~ 4 KB）、
+覆盖 64 项：MD5 向量与 Node `crypto` 对拍、AES-256-ECB 往返（1 B ~ 4 KB）、
 明文/密文/提示文案三种解密分支、错误时间戳必须抛错、base64 边界（非法字符 / URL-safe / 省略填充）、
-鉴权三种方式、`/api` 前缀兼容、`_t` 击穿参数、图片转发与 CORS 预检、图片 403 回退直链、
+鉴权三种方式、`/api` 前缀兼容、`_t` 击穿参数、图片转发与 CORS 预检、图片 403/404/网络错误一律 502、
 上游返回非法内容或抛运行时异常时只返回 JSON 502、各平台入口的导出与路由。
 全程使用假上游，不访问真实站点；假 fetch 还会模拟 Cloudflare Workers 不支持 `RequestInit.cache`。
 
@@ -254,15 +253,14 @@ const coverUrl = `${PROXY_BASE}/media/albums/${id}_3x4.jpg?key=${API_KEY}`
   `UPSTREAM` 固定一组域名，或把 `SERVER_LIST_URL` 指向自建镜像。
 - **个别接口 502「解密失败」**：上游返回了非预期的内容（例如提示文案已改为加密形式的新模板），
   可在 `src/lib/jm-crypto.js` 的 `CONTENT_TEMPLATES` 里补充模板后重新部署。
-- **图片返回 403 / 502「图片获取失败」**：图片 CDN 会拦截数据中心出口 IP（Cloudflare Workers 常见）。
-  代理已带浏览器 UA / Referer 并会在多台图源间重试；仍失败时默认 302 跳到真实图源，由客户端自己下载。
-  想保持严格代理可以设 `MEDIA_FALLBACK=error`，但那样在 Workers 上大概率取不到图。
+- **图片返回 502「图片获取失败：HTTP 403」**：图片 CDN 会拦截数据中心出口 IP（Cloudflare Workers /
+  EdgeOne 常见）。代理已带浏览器 UA / Referer 并会在多台图源间重试，取不到就直接返回 502，
+  **不会** 302 跳到真实图源。想提高命中率优先用固定出口的 VPS / 云函数，或把 `IMG_SERVERS`
+  换成为你实测可用的域名。
 - **EdgeOne 报 `InvalidCharacterError` / 函数不生效**：两件事都已在仓库里处理——
   ① 解码不再用 `atob`（EdgeOne 运行时遇到非 base64 字符会抛 `InvalidCharacterError`），
   改为内置纯 JS base64 解码，非法内容只会返回 502 JSON；
   ② 函数必须放在 `edge-functions/` 目录（`index.js` + `[[default]].js`），放在旧版的
   `functions/` 里不会被 EdgeOne 加载。更新代码后请重新部署。
-- **图片 302 后加载失败**：只有 `IMG_SERVERS` 第 0 个域名返回 `Access-Control-Allow-Origin`，
-  回退直链固定用它；如果你自定义了 `IMG_SERVERS`，请把支持 CORS 的域名放在第 0 位。
 - **Android 9 / 旧 WebView 无法访问**：代理默认只返回标准 JSON 与 CORS 头，不依赖新特性；
   若客户端设置了 `X-Api-Key`，注意在旧内核上 `fetch` 头名区分大小写无影响。

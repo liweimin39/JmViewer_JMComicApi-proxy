@@ -26,20 +26,11 @@ let serverCache = { servers: [], expires: 0 }
 
 /**
  * 图片 CDN 对「数据中心 IP + 非浏览器 UA」比较敏感，403 基本都来自这里。
- * 用一组接近真机的请求头取图，命中率明显更高；仍然 403 时由调用方决定是否回退直链。
+ * 用一组接近真机的请求头取图，命中率明显更高；仍然失败时由调用方返回 502。
  */
 const MEDIA_UA =
   'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'
 const MEDIA_REFERER = 'https://18comic.vip/'
-
-/** 图片被上游判定为拒绝后，短时间内的请求直接走回退（避免每张图都白跑一次子请求） */
-const MEDIA_BLOCK_TTL = 60 * 1000
-let mediaBlock = { at: 0, status: 0 }
-
-/** 仅用于自测：清空图片封禁记忆 */
-export function resetMediaState() {
-  mediaBlock = { at: 0, status: 0 }
-}
 
 /** 仅用于自测：清空服务器列表缓存 */
 export function resetServerState() {
@@ -222,9 +213,8 @@ export async function callApi({ upstreamPath, params = {}, env, ctx }) {
 /**
  * 图片转发：path 形如 media/albums/123_3x4.jpg。
  *
- * 从客户端指定的 s 索引开始，依次试其余图源（403 / 5xx / 网络错误才换）；
- * 全部失败时返回最后一次的状态，url 固定给到约定支持 CORS 的 servers[0]，
- * 这样客户端回退后仍能 <img> 显示、fetch 下载、canvas 解密。
+ * 从客户端指定的 s 索引开始，依次试其余图源（网络错误 / 5xx 才换）；
+ * 全部失败时返回最后一次的响应与状态，由调用方统一返回 502。
  *
  * @returns {{response: Response|null, server: string, url: string, status: number}}
  */
@@ -233,13 +223,6 @@ export async function fetchMedia(path, { serverIndex = 0, env, ctx }) {
   const start =
     Number.isInteger(serverIndex) && serverIndex >= 0 ? serverIndex % servers.length : 0
   const urlOf = (server) => `https://${server}/${path}`
-  // 约定 IMG_SERVERS[0] 是带 Access-Control-Allow-Origin 的那台
-  const fallback = { server: servers[0], url: urlOf(servers[0]) }
-
-  // 最近一次取图被上游拒绝 → 直接让客户端自己去取，省掉一次注定失败的子请求
-  if (mediaBlock.status && Date.now() - mediaBlock.at < MEDIA_BLOCK_TTL) {
-    return { response: null, ...fallback, status: mediaBlock.status }
-  }
 
   let last = null
   for (let i = 0; i < servers.length; i++) {
@@ -252,22 +235,17 @@ export async function fetchMedia(path, { serverIndex = 0, env, ctx }) {
         { headers: mediaHeaders(), redirect: 'follow' },
         timeoutOf(env),
       )
-      if (res.ok) {
-        mediaBlock = { at: 0, status: 0 }
-        return { response: res, server, url, status: res.status }
-      }
+      if (res.ok) return { response: res, server, url, status: res.status }
       last = { response: res, server, url, status: res.status }
       // 404 说明这张图在这条路径上就没有，换域名也没用
       if (res.status === 404) break
       // 403 基本是出口 IP / 风控拦截，同一个 CDN 集群换域名同样会被拦
-      if (res.status === 403) {
-        mediaBlock = { at: Date.now(), status: 403 }
-        break
-      }
+      if (res.status === 403) break
     } catch (error) {
       last = { response: null, server, url, status: 0, error }
     }
   }
 
-  return { response: last?.response ?? null, ...fallback, status: last?.status ?? 0 }
+  if (last) return last
+  return { response: null, server: servers[start], url: urlOf(servers[start]), status: 0 }
 }
