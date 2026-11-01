@@ -6,9 +6,9 @@
 import nodeCrypto from 'node:crypto'
 import { md5 } from '../src/lib/md5.js'
 import { aesDecryptEcb } from '../src/lib/aes.js'
-import { decryptContent, decryptServerList } from '../src/lib/jm-crypto.js'
+import { decryptContent, decryptServerList, looksEncrypted } from '../src/lib/jm-crypto.js'
 import { handleRequest } from '../src/core/handler.js'
-import { resetMediaState } from '../src/core/upstream.js'
+import { resetMediaState, resetServerState } from '../src/core/upstream.js'
 
 const SERVER_SEED = 'diosfjckwpqpdfjkvnqQjsik'
 const SERVER_LIST = ['api-a.test', 'api-b.test', 'api-c.test', 'api-d.test', 'api-e.test']
@@ -105,6 +105,31 @@ check('错误时间戳抛出异常', threw)
 
 const serversCipher = encrypt(JSON.stringify({ Server: SERVER_LIST }), md5(SERVER_SEED))
 check('服务器列表解密', decryptServerList(serversCipher).Server.length === SERVER_LIST.length)
+
+// base64 边界：换成纯 JS 解码后不能再出现 InvalidCharacterError 这类运行时异常
+const urlSafeCipher = serversCipher.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+check('URL-safe base64 且省略填充仍可解密', decryptServerList(urlSafeCipher).Server.length === SERVER_LIST.length)
+check('密文中间夹空白仍可解密', decryptServerList(`\n${serversCipher.replace(/=/g, '=\n')}\n`).Server.length === SERVER_LIST.length)
+
+let badB64Message = ''
+try {
+  decryptServerList('%%%not-base64@@@')
+} catch (error) {
+  badB64Message = error.message
+}
+check('非法 base64 给出可读报错', badB64Message.includes('服务器列表解密失败'), badB64Message)
+
+let emptyMessage = ''
+try {
+  decryptServerList('   ')
+} catch (error) {
+  emptyMessage = error.message
+}
+check('空响应给出可读报错', emptyMessage.includes('响应内容为空'), emptyMessage)
+
+check('looksEncrypted 认可密文', looksEncrypted(serversCipher))
+check('looksEncrypted 拒绝非法字符', looksEncrypted('%%%not-base64@@@') === false)
+check('looksEncrypted 拒绝明文', looksEncrypted('{"a":1}') === false)
 
 console.log('\n[4] 路由与鉴权')
 const calls = []
@@ -223,5 +248,37 @@ const downRes = await handleRequest(
 const downBody = await downRes.json()
 check('上游失败 502', downRes.status === 502 && downBody.ok === false, downBody.error)
 
+console.log('\n[6.1] 上游内容异常 → JSON 502（不再把运行时异常漏给平台）')
+resetServerState()
+const garbageFetch = async (url) => {
+  if (String(url).includes('newsvr-2025.txt')) return new Response('%%% 非法内容 @@@')
+  return new Response('upstream error', { status: 500 })
+}
+const badServers = await handleRequest(req('/servers', { headers: { 'X-Api-Key': 'test-key' } }), env, {
+  fetch: garbageFetch,
+})
+const badServersBody = await badServers.json()
+check('非法 base64 返回 JSON 502', badServers.status === 502 && badServersBody.ok === false, badServers.status)
+check('报错文案可读', /服务器列表解密失败/.test(badServersBody.error || ''), badServersBody.error)
+
+resetServerState()
+const emptyServers = await handleRequest(req('/servers', { headers: { 'X-Api-Key': 'test-key' } }), env, {
+  fetch: async () => new Response(''),
+})
+const emptyServersBody = await emptyServers.json()
+check('服务器列表空响应 → JSON 502', emptyServers.status === 502 && emptyServersBody.ok === false, emptyServers.status)
+check('空响应报错文案可读', /响应为空/.test(emptyServersBody.error || ''), emptyServersBody.error)
+
+resetServerState()
+const domLike = await handleRequest(req('/album?id=1', { headers: { 'X-Api-Key': 'test-key' } }), env, {
+  fetch: async () => {
+    throw new DOMException('bad base64', 'InvalidCharacterError')
+  },
+})
+const domLikeBody = await domLike.json()
+check('运行时异常也只返回 JSON 502', domLike.status === 502 && domLikeBody.ok === false, domLike.status)
+check('异常带 name 便于排查', /InvalidCharacterError/.test(domLikeBody.error || ''), domLikeBody.error)
+
+resetServerState()
 console.log(`\n结果：${passed} 通过，${failed} 失败\n`)
 process.exit(failed ? 1 : 0)

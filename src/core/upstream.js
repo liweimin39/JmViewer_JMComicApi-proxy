@@ -41,6 +41,11 @@ export function resetMediaState() {
   mediaBlock = { at: 0, status: 0 }
 }
 
+/** 仅用于自测：清空服务器列表缓存 */
+export function resetServerState() {
+  serverCache = { servers: [], expires: 0 }
+}
+
 function mediaHeaders() {
   return {
     'user-agent': MEDIA_UA,
@@ -105,11 +110,16 @@ export async function getServerList(env, ctx) {
   if (!res.ok) throw new Error(`获取服务器列表失败：HTTP ${res.status}`)
 
   const text = (await res.text()).trim()
+  if (!text) throw new Error('获取服务器列表失败：响应为空')
   let parsed
   try {
     parsed = JSON.parse(text)
   } catch {
-    parsed = decryptServerList(text)
+    try {
+      parsed = decryptServerList(text)
+    } catch (error) {
+      throw new Error(`获取服务器列表失败：${error?.message || error}`)
+    }
   }
 
   const servers = Array.isArray(parsed?.Server) ? parsed.Server.filter(Boolean) : []

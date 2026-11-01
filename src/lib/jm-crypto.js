@@ -15,11 +15,53 @@ const SERVER_LIST_SEED = 'diosfjckwpqpdfjkvnqQjsik'
 
 export const TOKEN_TEMPLATE = CONTENT_TEMPLATES[0]
 
+/**
+ * 纯 JS base64 解码。
+ * 不用 atob：各平台实现差异大（EdgeOne 等运行时遇到非 base64 字符会直接抛
+ * InvalidCharacterError，错误信息还很难看），这里统一自己解析并给出可读错误。
+ */
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+const B64_TABLE = (() => {
+  const table = new Int16Array(128).fill(-1)
+  for (let i = 0; i < B64_CHARS.length; i++) table[B64_CHARS.charCodeAt(i)] = i
+  return table
+})()
+
+function base64Digit(text, index) {
+  const code = text.charCodeAt(index)
+  return code < 128 ? B64_TABLE[code] : -1
+}
+
 function base64ToBytes(text) {
-  const bin = atob(text.replace(/\s+/g, ''))
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
+  let source = String(text ?? '').replace(/[\s\uFEFF]+/g, '')
+  if (!source) throw new Error('响应内容为空')
+  // 兼容 URL-safe base64
+  source = source.replace(/-/g, '+').replace(/_/g, '/')
+  // 去掉末尾填充后按长度补齐，兼容省略 = 的变体
+  source = source.replace(/=+$/, '')
+  const remainder = source.length % 4
+  if (remainder === 1) throw new Error('响应内容不是合法的 base64')
+  const padding = remainder === 0 ? 0 : 4 - remainder
+  const bytes = new Uint8Array(((source.length + padding) / 4) * 3 - padding)
+
+  let offset = 0
+  for (let i = 0; i < source.length; i += 4) {
+    let value = 0
+    let digits = 0
+    const end = Math.min(i + 4, source.length)
+    for (let j = i; j < end; j++) {
+      const digit = base64Digit(source, j)
+      if (digit < 0) throw new Error('响应内容不是合法的 base64')
+      value = (value << 6) | digit
+      digits++
+    }
+    value <<= 6 * (4 - digits)
+    if (offset < bytes.length) bytes[offset++] = (value >> 16) & 0xff
+    if (offset < bytes.length) bytes[offset++] = (value >> 8) & 0xff
+    if (offset < bytes.length) bytes[offset++] = value & 0xff
+  }
+
+  return bytes
 }
 
 function bytesToUtf8(bytes) {
@@ -80,7 +122,13 @@ export function decryptContent(timestamp, payload) {
  */
 export function decryptServerList(text) {
   const key = md5(SERVER_LIST_SEED)
-  const json = bytesToUtf8(aesDecryptEcb(base64ToBytes(String(text).trim()), key))
+  const source = String(text ?? '').trim()
+  let json
+  try {
+    json = bytesToUtf8(aesDecryptEcb(base64ToBytes(source), key))
+  } catch (error) {
+    throw new Error(`服务器列表解密失败：${error?.message || error}`)
+  }
   return JSON.parse(json)
 }
 

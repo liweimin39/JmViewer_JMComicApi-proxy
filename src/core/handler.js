@@ -165,6 +165,13 @@ async function handleApi(request, url, env, ctx, startedAt, route) {
   )
 }
 
+/** 把异常转成可读文案；DOMException 之类会带上 name，便于排查平台差异 */
+function describeError(error) {
+  const message = error?.message || String(error)
+  const name = error?.name && error.name !== 'Error' ? `${error.name}: ` : ''
+  return `${name}${message}`
+}
+
 /**
  * @param {Request} request
  * @param {object} env 环境变量（各平台注入）
@@ -172,6 +179,16 @@ async function handleApi(request, url, env, ctx, startedAt, route) {
  */
 export async function handleRequest(request, env = {}, deps = {}) {
   const ctx = { fetch: deps.fetch || globalThis.fetch.bind(globalThis) }
+  // ★ 整条链路都兜底：任何异常都返回 JSON 502，而不是让平台运行时抛 500 错误页
+  //   （EdgeOne / 其他运行时对异常的处理各不相同，绝不能把异常漏出去）
+  try {
+    return await dispatch(request, env, ctx)
+  } catch (error) {
+    return errorResponse(describeError(error), { status: 502, request, env })
+  }
+}
+
+async function dispatch(request, env, ctx) {
   const url = new URL(request.url)
   const path = normalizePath(url.pathname)
   const startedAt = Date.now()
@@ -197,24 +214,23 @@ export async function handleRequest(request, env = {}, deps = {}) {
     return errorResponse('密钥无效', { status: 401, request, env })
   }
 
-  try {
-    if (path === '/servers') return await handleServers(request, env, ctx, startedAt)
+  if (path === '/servers') return await handleServers(request, env, ctx, startedAt)
 
-    if (path === '/media' || path.startsWith('/media/')) {
-      const rest = path.slice('/media'.length).replace(/^\/+/, '')
-      if (!rest) return errorResponse('缺少图片路径', { status: 400, request, env })
-      return await handleMedia(request, url, env, ctx, `media/${rest}`)
-    }
-
-    const route = API_ROUTES[path]
-    if (route) return await handleApi(request, url, env, ctx, startedAt, route)
-
-    return jsonResponse(
-      { ok: false, error: '接口不存在', endpoints: [...Object.keys(API_ROUTES), '/servers', '/media/:type/:file'] },
-      { status: 404, request, env },
-    )
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return errorResponse(message, { status: 502, request, env })
+  if (path === '/media' || path.startsWith('/media/')) {
+    const rest = path.slice('/media'.length).replace(/^\/+/, '')
+    if (!rest) return errorResponse('缺少图片路径', { status: 400, request, env })
+    return await handleMedia(request, url, env, ctx, `media/${rest}`)
   }
+
+  const route = API_ROUTES[path]
+  if (route) return await handleApi(request, url, env, ctx, startedAt, route)
+
+  return jsonResponse(
+    {
+      ok: false,
+      error: '接口不存在',
+      endpoints: [...Object.keys(API_ROUTES), '/servers', '/media/:type/:file'],
+    },
+    { status: 404, request, env },
+  )
 }
