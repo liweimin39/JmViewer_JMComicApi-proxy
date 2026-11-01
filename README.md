@@ -4,7 +4,7 @@
 **取时间戳令牌和解密全部放到服务端**，客户端只带一把配置好的 KEY，不再处理时间戳、
 AES 密钥和 CDN 缓存问题。
 
-支持 **Cloudflare Workers / EdgeOne Pages Functions / Vercel**，零依赖、无 Node 专有 API
+支持 **Cloudflare Workers / EdgeOne Makers Edge Functions / Vercel**，零依赖、无 Node 专有 API
 （MD5 与 AES-256-ECB 用纯 JS 实现），同一套代码三处复用。
 
 > ⚠️ 本项目仅做协议转发与解密研究，请遵守所在地法律法规，不要用于商业传播。
@@ -59,9 +59,12 @@ JmViewer_JMComicApi-proxy/
 │   │   ├── jm-crypto.js    # 上游协议：令牌 / data 解密 / 服务器列表解密
 │   │   └── http.js         # JSON 响应与 CORS
 │   └── worker.js           # Cloudflare Workers 入口
-├── functions/[[path]].js   # EdgeOne Pages Functions（兼容 Cloudflare Pages Functions）
+├── edge-functions/         # EdgeOne Makers Edge Functions 入口
+│   ├── index.js            #   根路径 `/`
+│   └── [[default]].js      #   其余全部路径（/album、/media/...）
+├── functions/[[path]].js   # Cloudflare Pages Functions 入口
 ├── api/index.js            # Vercel Edge Function 入口
-├── test/selftest.js        # 57 项离线自测
+├── test/selftest.js        # 65 项离线自测
 ├── wrangler.toml
 ├── vercel.json
 └── .dev.vars.example
@@ -135,36 +138,34 @@ npx wrangler deploy
 - 建议绑定自定义域名：Workers 默认域名在国内访问不稳定
 - 本地调试：复制 `.dev.vars.example` 为 `.dev.vars` 并填好 `API_KEY`，执行 `npx wrangler dev`
 
-### 6.2 EdgeOne Pages / Makers Functions
+### 6.2 EdgeOne Makers（Edge Functions）
+
+EdgeOne Makers 只认 `edge-functions/` 目录，本仓库已按官方约定放好两个入口：
+
+| 文件 | 路由 |
+| --- | --- |
+| `edge-functions/index.js` | `/`（返回服务信息） |
+| `edge-functions/[[default]].js` | 其余全部路径：`/album`、`/media/albums/x.jpg`、`/api/...` |
 
 1. 将本目录推送到 GitHub 仓库；
-2. EdgeOne 控制台「Pages / Makers → 新建项目 → 导入 Git 仓库」；
+2. EdgeOne 控制台「Makers → 新建项目 → 导入 Git 仓库」；
 3. 构建配置：框架选「其他」，构建命令留空，输出目录留空（纯函数项目）；
-4. 「环境变量」中添加 `API_KEY`（可选 `ALLOWED_ORIGINS`）；
-5. 部署完成后，所有路径由 `functions/[[path]].js` 接管。
+4. 「环境变量」中添加 `API_KEY`（可选 `ALLOWED_ORIGINS`、`MEDIA_FALLBACK`）；
+5. 部署完成后，`edge-functions/index.js` 与 `[[default]].js` 接管所有请求。
 
-`functions/` 目录写法与 Cloudflare Pages Functions 一致，`onRequest(context)` 中
-`context.request` 是标准 Request，`context.env` 是环境变量对象。入口同时提供了
-`export function onRequest` 与 `export default onRequest`，两种平台解析方式都能命中。
+`onRequest(context)` 中 `context.request` 是标准 Request，`context.env` 是环境变量对象；
+两个入口都同时导出了 `export function onRequest` 与 `export default onRequest`，两种
+handler 解析方式都能命中。
 
-EdgeOne 新版文档（[Edge Functions](https://pages.edgeone.ai/zh/document/edge-functions)）
-把函数目录写作 `edge-functions/`，并要求 `export default function onRequest(context)`。
-如果你的项目只认这个目录，可新建 `edge-functions/api/[[default]].js`：
-
-```js
-import { handleRequest } from '../../src/core/handler.js'
-
-export default function onRequest(context) {
-  return handleRequest(context.request, context.env || {})
-}
-```
-
-此时所有接口都在 `/api` 下（`[[default]]` 只匹配本目录层级），客户端把代理地址填成
-`https://your-app.edgeone.run/api` 即可——代理会自动去掉 `/api` 前缀。
+> 注意：`[[default]].js` **不匹配根路径 `/`**，所以根路径必须由 `index.js` 处理；
+> 平台规则是静态资源优先于函数路由，本仓库没有静态资源，所有请求都会进函数。
+> `functions/[[path]].js` 只用于 Cloudflare Pages，EdgeOne 不会读取它。
 
 > Edge Functions 限制：代码包 5 MB、请求 body 1 MB、单次执行 CPU 200 ms（不含 I/O 等待）。
 > 本代理代码量很小，CPU 主要花在纯 JS 的 AES 解密上；如果上游很慢导致超时，先调小
 > `REQUEST_TIMEOUT_MS`，别把它调大。
+
+本地调试：`npm i -g edgeone` 后执行 `edgeone makers dev`。
 
 ### 6.3 Vercel
 
@@ -205,10 +206,10 @@ http.createServer(async (req, res) => {
 node test/selftest.js
 ```
 
-覆盖 57 项：MD5 向量与 Node `crypto` 对拍、AES-256-ECB 往返（1 B ~ 4 KB）、
+覆盖 65 项：MD5 向量与 Node `crypto` 对拍、AES-256-ECB 往返（1 B ~ 4 KB）、
 明文/密文/提示文案三种解密分支、错误时间戳必须抛错、base64 边界（非法字符 / URL-safe / 省略填充）、
 鉴权三种方式、`/api` 前缀兼容、`_t` 击穿参数、图片转发与 CORS 预检、图片 403 回退直链、
-上游返回非法内容或抛运行时异常时只返回 JSON 502。
+上游返回非法内容或抛运行时异常时只返回 JSON 502、各平台入口的导出与路由。
 全程使用假上游，不访问真实站点；假 fetch 还会模拟 Cloudflare Workers 不支持 `RequestInit.cache`。
 
 ## 8. JmViewer 客户端接入
@@ -256,10 +257,11 @@ const coverUrl = `${PROXY_BASE}/media/albums/${id}_3x4.jpg?key=${API_KEY}`
 - **图片返回 403 / 502「图片获取失败」**：图片 CDN 会拦截数据中心出口 IP（Cloudflare Workers 常见）。
   代理已带浏览器 UA / Referer 并会在多台图源间重试；仍失败时默认 302 跳到真实图源，由客户端自己下载。
   想保持严格代理可以设 `MEDIA_FALLBACK=error`，但那样在 Workers 上大概率取不到图。
-- **EdgeOne Pages Functions 报 `InvalidCharacterError`**：早期版本用 `atob` 解码上游密文，
-  EdgeOne 运行时遇到非 base64 字符会抛这个异常。现在改为内置纯 JS base64 解码，
-  非法内容只会返回 502 JSON（如「服务器列表解密失败：响应内容不是合法的 base64」）。
-  请更新代码后重新部署；另外整条链路已兜底，任何异常都转成 JSON 502，不会再出现平台 500 错误页。
+- **EdgeOne 报 `InvalidCharacterError` / 函数不生效**：两件事都已在仓库里处理——
+  ① 解码不再用 `atob`（EdgeOne 运行时遇到非 base64 字符会抛 `InvalidCharacterError`），
+  改为内置纯 JS base64 解码，非法内容只会返回 502 JSON；
+  ② 函数必须放在 `edge-functions/` 目录（`index.js` + `[[default]].js`），放在旧版的
+  `functions/` 里不会被 EdgeOne 加载。更新代码后请重新部署。
 - **图片 302 后加载失败**：只有 `IMG_SERVERS` 第 0 个域名返回 `Access-Control-Allow-Origin`，
   回退直链固定用它；如果你自定义了 `IMG_SERVERS`，请把支持 CORS 的域名放在第 0 位。
 - **Android 9 / 旧 WebView 无法访问**：代理默认只返回标准 JSON 与 CORS 头，不依赖新特性；

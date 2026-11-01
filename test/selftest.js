@@ -280,5 +280,23 @@ check('运行时异常也只返回 JSON 502', domLike.status === 502 && domLikeB
 check('异常带 name 便于排查', /InvalidCharacterError/.test(domLikeBody.error || ''), domLikeBody.error)
 
 resetServerState()
+
+console.log('\n[7] 平台入口导出')
+const edgeRoot = await import('../edge-functions/index.js')
+const edgeCatchAll = await import('../edge-functions/[[default]].js')
+const cfPages = await import('../functions/[[path]].js')
+check('edge-functions/index.js 导出 onRequest', typeof edgeRoot.onRequest === 'function')
+check('edge-functions/index.js 导出 default', typeof edgeRoot.default === 'function')
+check('edge-functions/[[default]].js 导出 onRequest', typeof edgeCatchAll.onRequest === 'function')
+check('edge-functions/[[default]].js 导出 default', typeof edgeCatchAll.default === 'function')
+check('functions/[[path]].js 导出 onRequest', typeof cfPages.onRequest === 'function')
+
+const rootRes = await edgeRoot.default({ request: req('/'), env })
+check('根路径入口返回服务信息', rootRes.status === 200)
+const healthViaEdge = await edgeCatchAll.onRequest({ request: req('/health'), env })
+check('通配入口处理 /health', healthViaEdge.status === 200)
+const guardedViaEdge = await edgeCatchAll.default({ request: req('/album?id=1'), env })
+check('通配入口仍走鉴权', guardedViaEdge.status === 401, guardedViaEdge.status)
+
 console.log(`\n结果：${passed} 通过，${failed} 失败\n`)
 process.exit(failed ? 1 : 0)
