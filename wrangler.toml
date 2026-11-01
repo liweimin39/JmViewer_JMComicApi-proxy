@@ -1,0 +1,12 @@
+name = "jmviewer-jmcomic-api-proxy"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+
+# 变量写在这里的只有非敏感项；API_KEY 请用：
+#   npx wrangler secret put API_KEY
+[vars]
+ALLOWED_ORIGINS = "*"
+REQUEST_TIMEOUT_MS = "15000"
+
+[observability]
+enabled = true
