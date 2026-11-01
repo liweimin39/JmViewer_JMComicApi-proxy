@@ -8,6 +8,7 @@ import { md5 } from '../src/lib/md5.js'
 import { aesDecryptEcb } from '../src/lib/aes.js'
 import { decryptContent, decryptServerList } from '../src/lib/jm-crypto.js'
 import { handleRequest } from '../src/core/handler.js'
+import { resetMediaState } from '../src/core/upstream.js'
 
 const SERVER_SEED = 'diosfjckwpqpdfjkvnqQjsik'
 const SERVER_LIST = ['api-a.test', 'api-b.test', 'api-c.test', 'api-d.test', 'api-e.test']
@@ -46,6 +47,10 @@ function makeFetch(calls, options = {}) {
       return new Response(encrypt(JSON.stringify({ Server: SERVER_LIST }), md5(SERVER_SEED)))
     }
     if (String(url).includes('/media/')) {
+      const status = options.mediaStatus || 200
+      if (status !== 200) {
+        return new Response('forbidden', { status, headers: { 'content-type': 'text/plain' } })
+      }
       return new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
         status: 200,
         headers: { 'content-type': 'image/jpeg' },
@@ -162,6 +167,48 @@ check('图片允许跨域', mediaRes.headers.get('access-control-allow-origin') 
 const preflight = await handleRequest(req('/album', { method: 'OPTIONS' }), env, { fetch: fetchImpl })
 check('OPTIONS 204', preflight.status === 204)
 check('预检允许 X-Api-Key', /x-api-key/i.test(preflight.headers.get('access-control-allow-headers') || ''))
+
+console.log('\n[5.1] 图片 403 → 回退直链')
+resetMediaState()
+const mediaCalls = []
+const blocked = await handleRequest(
+  req('/media/albums/1_3x4.jpg?s=2', { headers: { 'X-Api-Key': 'test-key' } }),
+  env,
+  { fetch: makeFetch(mediaCalls, { mediaStatus: 403 }) },
+)
+check('全部图源 403 时默认 302 回退', blocked.status === 302, blocked.status)
+check('回退指向真实图源', /^https:\/\/cdn/.test(blocked.headers.get('location') || ''), blocked.headers.get('location'))
+check(
+  '回退固定用支持 CORS 的 0 号图源',
+  (blocked.headers.get('location') || '').includes('cdn-msp-jmimg2.072139.dpdns.org'),
+  blocked.headers.get('location'),
+)
+check('回退不缓存', blocked.headers.get('cache-control') === 'no-store')
+check('取图带浏览器 UA', mediaCalls.some((c) => c.headers['user-agent'] && /Mozilla/.test(c.headers['user-agent'])))
+
+resetMediaState()
+const blockedAgain = await handleRequest(
+  req('/media/albums/1_3x4.jpg?s=2', { headers: { 'X-Api-Key': 'test-key' } }),
+  env,
+  { fetch: makeFetch([], { mediaStatus: 403 }) },
+)
+const spentCalls = []
+const remembered = await handleRequest(
+  req('/media/albums/2_3x4.jpg?s=2', { headers: { 'X-Api-Key': 'test-key' } }),
+  env,
+  { fetch: makeFetch(spentCalls, { mediaStatus: 403 }) },
+)
+check('被封后短时间内不再打上游', spentCalls.length === 0 && remembered.status === 302, spentCalls.length)
+check('首次仍尝试过一次上游', blockedAgain.status === 302)
+
+resetMediaState()
+const strictMedia = await handleRequest(
+  req('/media/albums/1_3x4.jpg?s=2', { headers: { 'X-Api-Key': 'test-key' } }),
+  { ...env, MEDIA_FALLBACK: 'error' },
+  { fetch: makeFetch([], { mediaStatus: 403 }) },
+)
+check('MEDIA_FALLBACK=error 时 502', strictMedia.status === 502)
+resetMediaState()
 
 console.log('\n[6] 上游与请求细节')
 check('令牌请求头已设置', calls.some((c) => c.headers.token && c.headers.tokenParam))

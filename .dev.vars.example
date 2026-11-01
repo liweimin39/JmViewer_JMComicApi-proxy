@@ -2,3 +2,5 @@
 API_KEY=change-me
 ALLOWED_ORIGINS=*
 REQUEST_TIMEOUT_MS=15000
+# 取图失败时的处理：redirect = 302 直链（默认）/ error = 返回 502
+MEDIA_FALLBACK=redirect
