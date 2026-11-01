@@ -36,6 +36,10 @@ function jsonRes(body) {
 
 function makeFetch(calls, options = {}) {
   return async (url, init = {}) => {
+    // 模拟 Cloudflare Workers：fetch 不支持 RequestInit.cache，传了会直接报错
+    if ('cache' in init) {
+      throw new Error("The 'cache' field on 'RequestInitializerDict' is not implemented")
+    }
     calls.push({ url: String(url), headers: init.headers || {} })
     if (String(url).includes('newsvr-2025.txt')) {
       // 真实接口返回的是纯密文文本，不是 JSON

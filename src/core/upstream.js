@@ -66,10 +66,13 @@ export async function getServerList(env, ctx) {
   }
 
   const url = env.SERVER_LIST_URL || DEFAULT_SERVER_LIST_URL
+  // ★ 不要写 cache: 'no-store'：Cloudflare Workers 的 fetch 不支持 RequestInit.cache，
+  //   会抛 "The 'cache' field on 'RequestInitializerDict' is not implemented"。
+  //   绕过 CDN 缓存用请求头 cache-control: no-cache（外加 URL 上的时间戳参数）。
   const res = await fetchWithTimeout(
     ctx.fetch,
     url,
-    { headers: { 'cache-control': 'no-cache' }, redirect: 'follow', cache: 'no-store' },
+    { headers: { 'cache-control': 'no-cache' }, redirect: 'follow' },
     timeoutOf(env),
   )
   if (!res.ok) throw new Error(`获取服务器列表失败：HTTP ${res.status}`)
