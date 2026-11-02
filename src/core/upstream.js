@@ -213,7 +213,9 @@ export async function callApi({ upstreamPath, params = {}, env, ctx }) {
 /**
  * 图片转发：path 形如 media/albums/123_3x4.jpg。
  *
- * 从客户端指定的 s 索引开始，依次试其余图源（网络错误 / 5xx 才换）；
+ * 从客户端指定的 s 索引开始，依次试其余图源（403 / 5xx / 网络错误都换下一台）；
+ * 403 是「按域名 / 线路」拦截，不同镜像域名的策略并不一致，所以必须试完全部再放弃；
+ * 404 说明这张图在这条路径上就没有，换域名也没用，直接停。
  * 全部失败时返回最后一次的响应与状态，由调用方统一返回 502。
  *
  * @returns {{response: Response|null, server: string, url: string, status: number}}
@@ -239,8 +241,7 @@ export async function fetchMedia(path, { serverIndex = 0, env, ctx }) {
       last = { response: res, server, url, status: res.status }
       // 404 说明这张图在这条路径上就没有，换域名也没用
       if (res.status === 404) break
-      // 403 基本是出口 IP / 风控拦截，同一个 CDN 集群换域名同样会被拦
-      if (res.status === 403) break
+      // 403 只代表这一台域名/线路被拦，其它镜像可能仍然可用，继续换下一台
     } catch (error) {
       last = { response: null, server, url, status: 0, error }
     }

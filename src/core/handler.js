@@ -97,8 +97,8 @@ async function handleMedia(request, url, env, ctx, upstreamPath) {
   })
 
   if (!media.response || !media.response.ok) {
-    // 图片 CDN 对数据中心出口 IP 比较敏感（Cloudflare Workers / EdgeOne 常见 403），
-    // 取不到就直接 502，不再 302 跳到真实图源。
+    // fetchMedia 已按 s 的顺序把 6 台图源都试过；仍然取不到就直接 502，
+    // 不再 302 跳到真实图源。403 多为按域名/线路拦截，不同镜像策略不一致。
     const reason = media.response ? `HTTP ${media.response.status}` : '上游不可达'
     return errorResponse(`图片获取失败：${reason}`, { status: 502, request, env })
   }

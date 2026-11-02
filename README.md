@@ -64,7 +64,7 @@ JmViewer_JMComicApi-proxy/
 │   └── [[default]].js      #   其余全部路径（/album、/media/...）
 ├── functions/[[path]].js   # Cloudflare Pages Functions 入口
 ├── api/index.js            # Vercel Edge Function 入口
-├── test/selftest.js        # 64 项离线自测
+├── test/selftest.js        # 68 项离线自测
 ├── wrangler.toml
 ├── vercel.json
 └── .dev.vars.example
@@ -98,7 +98,7 @@ JmViewer_JMComicApi-proxy/
 | GET | `/forum` | `page`、`mode`、`aid` | 评论 |
 | GET | `/categories` | — | 分类 |
 | GET | `/categories/filter` | `page`、`c`、`o` | 分类筛选 |
-| GET | `/media/albums/<file>` 等 | `s`（图片域名索引） | 图片转发，带 `Access-Control-Allow-Origin: *` 与长缓存；取不到时直接返回 502 |
+| GET | `/media/albums/<file>` 等 | `s`（起始图源索引，0-5，从该台开始顺延试全部 6 台；`key` 用于鉴权） | 图片转发，带 `Access-Control-Allow-Origin: *` 与长缓存、`X-Proxy-Server`（实际出图的域名）；全部图源失败才返回 502 |
 
 统一响应结构：
 
@@ -205,10 +205,11 @@ http.createServer(async (req, res) => {
 node test/selftest.js
 ```
 
-覆盖 64 项：MD5 向量与 Node `crypto` 对拍、AES-256-ECB 往返（1 B ~ 4 KB）、
+覆盖 68 项：MD5 向量与 Node `crypto` 对拍、AES-256-ECB 往返（1 B ~ 4 KB）、
 明文/密文/提示文案三种解密分支、错误时间戳必须抛错、base64 边界（非法字符 / URL-safe / 省略填充）、
-鉴权三种方式、`/api` 前缀兼容、`_t` 击穿参数、图片转发与 CORS 预检、图片 403/404/网络错误一律 502、
-上游返回非法内容或抛运行时异常时只返回 JSON 502、各平台入口的导出与路由。
+鉴权三种方式、`/api` 前缀兼容、`_t` 击穿参数、图片转发与 CORS 预检、
+图片 403 逐台重试到成功 / 404 与网络错误收敛为 502、上游返回非法内容或抛运行时异常时只返回 JSON 502、
+各平台入口的导出与路由。
 全程使用假上游，不访问真实站点；假 fetch 还会模拟 Cloudflare Workers 不支持 `RequestInit.cache`。
 
 ## 8. JmViewer 客户端接入
@@ -253,10 +254,10 @@ const coverUrl = `${PROXY_BASE}/media/albums/${id}_3x4.jpg?key=${API_KEY}`
   `UPSTREAM` 固定一组域名，或把 `SERVER_LIST_URL` 指向自建镜像。
 - **个别接口 502「解密失败」**：上游返回了非预期的内容（例如提示文案已改为加密形式的新模板），
   可在 `src/lib/jm-crypto.js` 的 `CONTENT_TEMPLATES` 里补充模板后重新部署。
-- **图片返回 502「图片获取失败：HTTP 403」**：图片 CDN 会拦截数据中心出口 IP（Cloudflare Workers /
-  EdgeOne 常见）。代理已带浏览器 UA / Referer 并会在多台图源间重试，取不到就直接返回 502，
-  **不会** 302 跳到真实图源。想提高命中率优先用固定出口的 VPS / 云函数，或把 `IMG_SERVERS`
-  换成为你实测可用的域名。
+- **图片返回 502「图片获取失败：HTTP 403」**：图片 CDN 会按域名 / 线路拦截数据中心出口 IP。
+  代理会带浏览器 UA / Referer，并从 `s` 指定的图源开始把 6 台全部试一遍（403 时换下一台，
+  404 才停止），响应头 `X-Proxy-Server` 会标明实际出图的域名；全挂才返回 502，**不会** 302 跳转。
+  若所有图源都 403，建议换固定出口的 VPS / 云函数，或用 `IMG_SERVERS` 指定你实测可用的域名。
 - **EdgeOne 报 `InvalidCharacterError` / 函数不生效**：两件事都已在仓库里处理——
   ① 解码不再用 `atob`（EdgeOne 运行时遇到非 base64 字符会抛 `InvalidCharacterError`），
   改为内置纯 JS base64 解码，非法内容只会返回 502 JSON；

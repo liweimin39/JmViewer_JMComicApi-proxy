@@ -48,7 +48,10 @@ function makeFetch(calls, options = {}) {
     }
     if (String(url).includes('/media/')) {
       if (options.mediaThrow) throw new Error('media network down')
-      const status = options.mediaStatus || 200
+      const status =
+        typeof options.mediaStatus === 'function'
+          ? options.mediaStatus(String(url))
+          : options.mediaStatus || 200
       if (status !== 200) {
         return new Response('forbidden', { status, headers: { 'content-type': 'text/plain' } })
       }
@@ -210,13 +213,34 @@ check(
   blockedBody.error,
 )
 check('取图带浏览器 UA', mediaCalls.some((c) => c.headers['user-agent'] && /Mozilla/.test(c.headers['user-agent'])))
+check('403 不会被当成最终结果，6 台图源都试过', mediaCalls.filter((c) => c.url.includes('/media/')).length === 6, mediaCalls.length)
 
+// 现场情况：多数镜像 403，只有某一台可用（用户实测 ?s=4 能出图）
+const onlyIndex4 = await handleRequest(
+  req('/media/photos/1487250/00001.webp?s=0', { headers: { 'X-Api-Key': 'test-key' } }),
+  env,
+  {
+    fetch: makeFetch([], {
+      mediaStatus: (url) =>
+        url.includes('cdn-msp.jmapinodeudzn.net') ? 200 : 403,
+    }),
+  },
+)
+check('某台图源可用时照样出图', onlyIndex4.status === 200, onlyIndex4.status)
+check(
+  '响应头标明实际出图的图源',
+  onlyIndex4.headers.get('x-proxy-server') === 'cdn-msp.jmapinodeudzn.net',
+  onlyIndex4.headers.get('x-proxy-server'),
+)
+
+const notFoundCalls = []
 const notFound = await handleRequest(
   req('/media/albums/2_3x4.jpg?s=2', { headers: { 'X-Api-Key': 'test-key' } }),
   env,
-  { fetch: makeFetch([], { mediaStatus: 404 }) },
+  { fetch: makeFetch(notFoundCalls, { mediaStatus: 404 }) },
 )
 check('404 时返回 502', notFound.status === 502, notFound.status)
+check('404 不再换图源', notFoundCalls.filter((c) => c.url.includes('/media/')).length === 1, notFoundCalls.length)
 
 const mediaDown = await handleRequest(
   req('/media/albums/3_3x4.jpg?s=2', { headers: { 'X-Api-Key': 'test-key' } }),
